@@ -5,12 +5,6 @@
 
 import numpy as np
 
-## Global Experiment Constants
-N_PORTS = 8
-MAX_N_TRIALS = 20
-TRIAL_TIME_MAX = 4  # Based on experiment setup
-RADIUS = 1  # Arbitrary radius for the circular arrangement of ports
-
 ### Helper functions
 
 def sigmoid(x):
@@ -22,6 +16,11 @@ def von_mises(num_port, kappa):
     a = kappa * np.cos(2 * np.pi * np.arange(num_port) / num_port)
     f = np.exp(a - a.max())
     return np.array(f / f.sum())
+
+def random_argmax(values, rng, rtol=1e-9, atol=0.0):
+    """Argmax with uniform random tie-breaking among (numerically) equal maxima."""
+    ties = np.flatnonzero(np.isclose(values, values.max(), rtol=rtol, atol=atol))
+    return rng.choice(ties)
 
 class environment:
     """Environment class for the 8-port model. This simulates the environment for a specific recall session,
@@ -51,24 +50,24 @@ class environment:
             True if the poke is at the correct port, False otherwise."""
         return current_trial >= self._min_trials and port == 0  # Assuming port 0 is the correct port
         
-    def distance(self, target_port, prev_port):
+    def distance(self, target_port, prev_port, rng):
         if prev_port is None:
             target_loc = (self.radius * np.cos(target_port *2* np.pi / self.num_ports), self.radius * np.sin(target_port * np.pi * 2 / self.num_ports))
-            prev_port = self._generate_start_position()
+            prev_port = self._generate_start_position(rng)
             return np.linalg.norm(np.array(target_loc-prev_port))
         """Computes the distance between two ports in the 8-port model."""
         return min(abs(prev_port - target_port), self.num_ports - abs(prev_port - target_port))*(2 * np.pi / self.num_ports)*self.radius  # Each port is pi/4 radians apart
 
-    def _generate_start_position(self):
+    def _generate_start_position(self, rng):
         """Generates random starting positions for the mice."""
-        r, phi = self.radius * np.sqrt(np.random.random()), 2 * np.pi * np.random.random()
+        r, phi = self.radius * np.sqrt(rng.random()), 2 * np.pi * rng.random()
         return np.array([r * np.cos(phi), r * np.sin(phi)])
 
         # Based on the
         # Placeholder for the actual l(t) implementation
         # This should be replaced with the actual logic for the 8-port model
 
-    def timestamp(self, port, previous_port, t_in_trial):
+    def timestamp(self, port, previous_port, t_in_trial, rng):
         """Returns the timestamp of the poke and the total time spent in the trial.
         Args:
             port: The port that was poked.
@@ -80,7 +79,7 @@ class environment:
             The updated total time spent in the trial.
         t: The timestamp of the poke."""
 
-        t_in_trial += self.distance(port, previous_port) * self._alpha + self.poke_interval  # Add the time taken to move to the port and the poke interval
+        t_in_trial += self.distance(port, previous_port, rng) * self._alpha + self.poke_interval  # Add the time taken to move to the port and the poke interval
         return t_in_trial
 
     def l(self, stop, current_trial, t_in_trial):
@@ -135,10 +134,10 @@ class agent:
         mask = np.arange(belief_states.shape[1]) <= current_trial 
         return (belief_states * mask).sum(axis=1)
 
-    def policy(self, beliefs, current_trial):
+    def policy(self, beliefs, current_trial, rng):
         # Placeholder for the actual policy implementation
         # This should be replaced with the actual logic for the 8-port model
-        port = np.argmax(self.terminal(beliefs, current_trial))  # Choose the port with the highest marginal probability
+        port = random_argmax(self.terminal(beliefs, current_trial), rng)  # Choose the port with the highest marginal probability
         
         # Get the confidence of the chosen port
         confidence = self.marginal(beliefs)[port]
@@ -195,9 +194,11 @@ class agent:
 
 class belief_states:
     
-    def __init__(self, f_theta, g_phi, rho=0, sigma=0):
-        self.f_theta = f_theta #probability dist as a vector
-        self.g_phi = g_phi #probability dist as a vector
+    def __init__(self, params):
+        self.n_ports = params['n_ports']
+        self.max_trials = params['max_trials']
+        self.f_theta = params['f_theta'] #probability dist as a vector
+        self.g_phi = params['g_phi'] #probability dist as a vector
         self.state = self._initialize(self.f_theta, self.g_phi)
 
     @property
@@ -207,7 +208,7 @@ class belief_states:
     @f_theta.setter
     def f_theta(self, distribution):
         """Sets the f_theta distribution and checks if it is valid."""
-        if distribution.shape != (N_PORTS,):
+        if distribution.shape != (self.n_ports,):
             raise ValueError("f_theta must be a numpy array of size 1*8")
         if not np.allclose(distribution.sum(), 1):
             raise ValueError("f_theta must be a valid probability distribution")
@@ -220,7 +221,7 @@ class belief_states:
     @g_phi.setter
     def g_phi(self, distribution):
         """Sets the g_phi distribution and checks if it is valid."""
-        if distribution.shape != (MAX_N_TRIALS,):
+        if distribution.shape != (self.max_trials,):
             raise ValueError("g_phi must be a numpy array of size 1*20, over the 20 trials")
         if not np.allclose(distribution.sum(), 1):
             raise ValueError("g_phi must be a valid probability distribution")
@@ -237,14 +238,15 @@ class belief_states:
 
 
 class simulation:
-    def __init__(self, params_env, params_agent, f_theta, g_phi):
+    def __init__(self, params_env, params_agent, params_beliefs, seed=0):
+        self.rng = np.random.default_rng(seed)
         self.environment = environment(params_env)
         self.agent = agent(params_agent)
-        self.belief_states = belief_states(f_theta, g_phi, self.agent.rho, self.agent.sigma)
+        self.belief_states = belief_states(params_beliefs)
         self.sim_data = [] # Outcome of the mice. 
 
     def run(self):
-        self.belief_states = belief_states(self.belief_states.f_theta, self.belief_states.g_phi, self.agent.rho, self.agent.sigma)  # Reset belief states for each run
+        self.belief_states = belief_states(params_beliefs)  # Reset belief states for each run
         self.sim_data = []  # Reset simulation data for each run, follows the form of [(port, trial, t_sum), ...]
         current_trial = 0
         t_in_trial = 0  # Initialize time spent in the current trial
@@ -255,14 +257,14 @@ class simulation:
         while not w_t :
 
             # Decide where to poke, port_to_poke = $\arg\max_{a_t} \pi(a_t|b_{t-1})$,  confidence = $\pi(port_to_poke |b_{t-1})$
-            port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), current_trial) #Port and confidence for p_t given current state of beliefs b_{t-1}
+            port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), current_trial, self.rng) #Port and confidence for p_t given current state of beliefs b_{t-1}
 
             # mechanism 2 checks if the time to poke will exceed agent's t_max. We assume that the agent's t_max is below the environment's trial_time_max. If the time to poke exceeds this, we increment the trial and reset the time in trial.
-            t_sum = self.environment.timestamp(port_to_poke, self.sim_data[-1][0] if self.sim_data and t_in_trial > 0 else None , t_in_trial) 
+            t_sum = self.environment.timestamp(port_to_poke, self.sim_data[-1][0] if self.sim_data and t_in_trial > 0 else None , t_in_trial, self.rng) 
 
             mech2_stop_prob = self.agent._soft_time_gate(t_sum)  # Get the probability of stopping based on the time gate (soft mechanism 2)
             
-            current_trial, t_in_trial = self.environment.l(np.random.rand() < mech2_stop_prob, current_trial, t_sum)
+            current_trial, t_in_trial = self.environment.l(self.rng.random() < mech2_stop_prob, current_trial, t_sum)
             
             if current_trial >= self.environment.max_trials:  # Stop the simulation if water is received, max trials reached, or trial ended
                 break
@@ -272,25 +274,30 @@ class simulation:
 
             mech1_stop_prob = self.agent._soft_confidence_gate(confidence)  # Get the probability of stopping based on the confidence gate (soft mechanism 1)
             w_t = self.environment.respondToPoke(port_to_poke, current_trial)
+            self.sim_data.append((port_to_poke, current_trial, t_sum, confidence,w_t))  # Record the poke, trial, and whether water was received
+            
             if w_t:
                 break
 
             self.belief_states.update(self.agent.update(self.belief_states.get_state(), port_to_poke, current_trial)) # Update beliefs first
-            self.sim_data.append((port_to_poke, current_trial, t_sum, confidence,w_t))  # Record the poke, trial, and whether water was received
-            
 
-            if np.random.rand() < mech1_stop_prob: # Stops if the confidence gate is activated, i.e. if the agent's confidence in the chosen port exceeds the threshold
+            if self.rng.random() < mech1_stop_prob: # Stops if the confidence gate is activated, i.e. if the agent's confidence in the chosen port exceeds the threshold
                 current_trial += 1
                 t_in_trial = 0
                 if current_trial >= self.environment.max_trials:  # Stop the simulation if water is received, max trials reached, or trial ended
                     break
                 continue 
-
-            self.belief_states.update(self.agent.update(self.belief_states.get_state(), port_to_poke, current_trial))  # Update the agent's beliefs based on the observed outcome
-            
             
         print("Simulation completed. Total trials: ", current_trial)
         return self.sim_data
+
+
+## Global Experiment Constants
+SEED = 0
+N_PORTS = 8
+MAX_N_TRIALS = 20
+TRIAL_TIME_MAX = 4  # Based on experiment setup
+RADIUS = 1  # Arbitrary radius for the circular arrangement of ports
 
 params_env = {
     'min_trials': 5,
@@ -302,8 +309,8 @@ params_env = {
     'radius': RADIUS
 }
 params_agent = {
-    'rho': 0.01,
-    'sigma': 0.01,
+    'rho': 0,
+    'sigma': 0,
     'q1': 0.98,
     'q2': 0.98,
     'confidence_threshold': 0.5,
@@ -311,6 +318,14 @@ params_agent = {
     'beta1': 10,
     'beta2': 10
 }
-sim = simulation(params_env=params_env, params_agent=params_agent, f_theta=von_mises(N_PORTS, 5), g_phi=np.array([1/MAX_N_TRIALS for _ in range(MAX_N_TRIALS)]))
+
+params_beliefs = {
+    'n_ports': params_env['num_ports'],
+    'max_trials': params_env['max_trials'],
+    'f_theta': von_mises(N_PORTS, 5),
+    'g_phi': np.array([1/MAX_N_TRIALS for _ in range(MAX_N_TRIALS)])
+}
+sim = simulation(params_env=params_env, params_agent=params_agent,params_beliefs=params_beliefs, seed=SEED)
+
 results = sim.run()
 print(results)
