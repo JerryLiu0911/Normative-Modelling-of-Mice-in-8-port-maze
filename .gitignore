@@ -1,0 +1,26 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+.pytest_cache/
+
+# --- Editors and OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Claude Code local settings ---
+.claude/settings.local.json
+
+# --- Sources and admin documents (not ours to distribute; keep local) ---
+# Papers, the thesis, Yashar's notes, CUED guides, signed planning form.
+Context/literature/
+Context/*.pdf
+Context/*.md
+
+# --- Data: never commit Jercog-lab data ---
+data/

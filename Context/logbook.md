@@ -1,29 +1,18 @@
 # Project logbook — F-ya311-3, 8-port maze normative model
 
-Dated working record (CUED requires dated entries; submitted with the final report).
-Each entry ends with an **AI use** line for the final report's AI declaration.
-Entries marked *(reconstructed)* were written on 28 Oct 2026 from the AI session record, not on the day.
 
----
+## 2026-10-06 (Tue)
 
-## 2026-10-06 (Tue) *(reconstructed)*
-
-**Reading.** Read the project sources in full:
+Read the project sources:
 - planning form;
 - Morales et al. 2020 (task, Memory Index, CPP result);
 - Ahmadian's notes "Modeling 8-port maze behavior" (POMDP, belief updates, policies, likelihood, poke-count model);
 - Peixoto Moledo 2025 thesis (current protocol; von Mises GLM-HMM with four states; anti-NMDAR and anti-LGI1 results);
-- Jensen, Hennequin & Mattar 2024.
 
-**Context handoff.**
-- Checked the July–September handoff document against these sources. Its description of the normative model was wrong: it treated $g_\psi$ as a time-since-visit kernel, omitted $\tau$ from the hidden state, and claimed recall involves no belief updating.
-- Rewrote the handoff (`context_handoff_8port_dissertation.md`) with evidence tags, a background primer, the proposal and corrected citations.
 
-**AI use.** Claude Code (Anthropic, Claude Opus 5.5): reading and summarising all PDFs; cross-checking the handoff against them; rewriting the handoff; web searches to verify about 16 references. Output checked against the source PDFs, with equation, figure and page numbers given for each claim. The AI's first summary contained errors that later checks corrected, which is why claims are tagged by source.
+## 2026-10-07 (Wed)
 
-## 2026-10-07 (Wed) *(reconstructed)*
-
-**Admin.** Read the CUED "Part IIB projects: second notice" and "Part IIB guide" for 2026–27. Recorded deadlines, report rules and the mandatory appendices (risk retrospective, AI declaration) in handoff Appendix G.
+Read the CUED "Part IIB projects: second notice" and "Part IIB guide" for 2026–27. 
 
 Key dates:
 
@@ -35,45 +24,86 @@ Key dates:
 | TMR | 4 pm Thu 21 Jan 2027 |
 | Final report | 4 pm Mon 31 May 2027 |
 
-Module exams occupy the first three weeks of Easter term, so the first full report draft is needed by 27 Apr 2027.
 
-**AI use.** Claude Code (Claude Opus 5.5): extracted and summarised the two CUED documents; updated the plan's calendar. Dates cross-checked against the CUED key-dates table.
+## 2026-10-08
 
-## 2026-10-08 to 2026-10-10 *(reconstructed)*
+Prepared the hazard assessment, met with Dr.Ahmadian to discuss meeting details and clarify hazards.
 
-**Admin.** Prepared the hazard assessment.
 - Computational project; hazards limited to display-screen work, posture, repetitive strain, fatigue and portable equipment. Overall risk low.
 - Drafted an email asking Yashar to sign.
 - Considered a descriptive project title. Candidate: "Normative Modelling of Memory Interference in Mouse Spatial Behaviour". Keep the registered title on official forms.
 
-**AI use.** Claude Code (Claude Opus 5.5): drafted the hazard-and-control list, the one-sentence project description and the email; suggested title options. Wording reviewed and edited by me before use.
+## 2026-10-14
+
+**First supervisor meeting** 
+- Regular meeting times at 3pm on Wednesdays
+- Discussed/clarified concepts of experimental design :
+  - HMM-GLM (Descriptive model) : "Descriptive model" as a model that we choose to fit the data to, not assuming a certain behaviour. In general, we assume animal behaviour is based on a discrete set of states which is described by the HMM. We do not necessarily push for orthogonality between states (i.e. forcing each state to characterise an independent behaviour), however, based on our design of the regressors and the weights given to them via the GLM we still tend to be able to characterise distinctive behaviour of each state. However, this could be something we look into. For more info on how the HMM-GLM is used in descriptive behaviour models, read the Ashwood paper which uses a supposedly "simpler model"
+
+  - POMDP (normative model). “Normative” means that, given the task structure, the agent’s goal (obtain water as quickly as possible) and its information, we derive how an agent should behave, i.e. an optimal policy, rather than fitting a description of behaviour. The model in the notes departs from full optimality in three deliberate ways:
+
+    - Imperfect memory: the prior over the rewarded port is a finite-width distribution $f_\theta$ (e.g. von Mises, or delta + uniform) rather than a Dirac delta at the correct port. This is intentional: $\theta$ is the quantity we want to measure (memory precision, interference, drug effects).
+    - Approximate policy: actions are chosen greedily, maximising the probability of water on the current poke, rather than by solving the Bellman equation, which would maximise the expected discounted reward over the whole remaining search. Greedy ignores the value of waiting for water to switch on and the value of information, so it may be suboptimal. The size of that gap is an open question.
+    - Choice noise: ε-greedy (and optionally non-ideal observation beliefs $\rho, \sigma$) accounts for variability not explained by the belief.
+
+    - Inference itself is exact Bayes given $f_\theta$. The model is therefore bounded-optimal: optimal inference with imperfect memory and an approximately optimal policy. The fitted departures from optimality ($\theta$, $\epsilon$) are the interpretable quantities of interest.
+- Computational project; hazards limited to display-screen work, posture, repetitive strain, fatigue and portable equipment. Overall risk low.
+- Drafted an email asking Yashar to sign.
+- Considered a descriptive project title. Candidate: "Normative Modelling of Memory Interference in Mouse Spatial Behaviour". Keep the registered title on official forms.
+
 
 ## 2026-10-20 (Tue)
 
-Started `8-port-sim/v0.py`, a first draft of the simulator. Scaffolding: `environment`, `agent` and `belief_states` classes.
+Started `8-port-sim/v0.py`, a first draft of the simulator. Scaffolding: `environment`, `agent` and `belief_states` classes, strutctured separation of roles with the agent class containing the belief_states, and the environment to store the sequence of pokes.
 
-**AI use.** *(to fill in)*
 
 ## 2026-10-22 (Thu)
 
-**Meeting with Yashar.** Decisions recorded in `CLAUDE.md`, which now supersedes earlier documents:
-- **Inference:** ideal observer over $(r,\tau)$, with prior $f_\theta(r)\,g(\tau)$. $f_\theta$ is a von Mises over the ports, normalised by summing over ports. $g$ is passed in, with separate versions for the environment and the agent.
-- **Choice:** greedy, ε-greedy or softmax. No DQN for now.
-- **Stopping:** the modified Gonzalo model (notes Eqs 47, 57, 49, 58).
-- **Episode:** ends at the first water; sessions truncated with censoring.
-- **Fitting:** conditions on the true port and $\tau$, and uses the observed trial boundaries.
-- **Gates:** A simulator (6 Nov), B likelihood and recovery (4 Dec), C design utility (19 Feb), D robustness (19 Mar).
+**Second Supervisor Meeting**, clarified modelling design choices and set-up of the problem.
+- look through Ashwood paper for more information on MDPs
 
-**Review of CLAUDE.md against the sources.** Issues raised:
-1. Required test 3 can fail when $g$ has no mass on early trials. Every port's hit probability is then 0, so greedy ties.
-2. Eq. 47 stops after the poke that exceeds $t_{\max}$, but such a poke would lie outside the 4 s window.
-3. β is used for both the stopping sigmoid and the softmax.
-4. The scale of a softmax over $\mathcal{T}$ changes with $S_g(\ell)$, which affects κ–β identifiability.
-5. Fig. 12 shows trials of 1–4 pokes but may not bound trial length.
+- DQN is fitting the data, needs to recurrent iteration for model parameters, it's easier to just use the greedy policy
 
-**AI use.** Claude Code (Claude Opus 5.5): checked CLAUDE.md against the notes, thesis and Morales, and reviewed `v0.py`. Points flagged by the AI, for me to verify and decide.
 
-## 2026-10-27 to 2026-10-28 *(reconstructed)*
+- 3 sorts of docs :
+	- logbook, lot of detail, notes to my stuff so we remember what we've done, maybe include 
+	- results, when things work put them there
+	- TMR drafts, polished and more well-written work.
+
+t_n = time of the n_th poke in the current trial. use eq.47, use initial position as uniform over trigger zones
+
+first poke t_1 : delta_x (length of vector from trigger zone to first port, we can use straight lines for first) * alpha
+second poke : delta_x_2 (from first port to second port could be arc or straight line. Be careful of angular distance)*alpha + const. t
+
+2 stops : - t_max or reach correct port
+
+limitations :
+	- t_max = 4 following experimental procedures, buttt
+
+You're contradicting yourself by assuming you don't poke the correct port after knowing it (since we assume non-ideal memory)
+m_n(p_n)-P_conf
+
+3-parts of the model :
+
+1. Bayesian inference (epistemlogical) OPTIMAL : Ideal observer model (knows exactly how the environment works, not necessarily the hidden states) , in order to update this prior belief we update belief based on interaction on reward port/pokes. ASSUMING THAT THE MICE KNOWS THE RULES OF THE TASK, i.e. it knows that the reward is based on r and tau based on the rules of the experiment
+
+2. Decision making : NOT TRUELY DICTATED BY OPTIMALITY esp. Third part
+	- Where to poke
+		- Greedy policy may not be the most optimal
+		- POMDP is reducible to an MDP where the environment state is turned into our beliefs. You should take into account, if I take this action, how is my belief about the environment change, will this lead me to a higher subjective probability
+		- Consider Bellman optimality, DQN
+	- Whether should carry on poking or stop poking (relaxation of the initial condition where p=p*). 
+		- Could be based on energy expenditure too, which is similar to what eq. 57 describes, by stop poking after believing I've poked the correct port.
+
+- TODO :
+  - Generate synthetic data (simulate the data first)
+  	- model distance to first poke
+  	- model t_max (i.e. time limit for the agent) and the stop mechanisms
+  
+  - Currently ideal observe model, one of our aims could be to relax that, i.e., it might not exactly know how the rules work with respect to r and tau (LOOK AT MODELLING RHO AND SIGMA IN THE NOTES FOR SMALL PROBABILITY OF GETTING REWARD FROM WRONG PORT etc...)
+  - Share Overleaf, GitHub Repo
+  
+## 2026-10-27 to 2026-10-28
 
 **Simulator design.** Discussed the structure of `v0.py` with a view to porting to JAX later.
 
@@ -82,7 +112,7 @@ Conclusions:
 - **Environment outside the agent.** The environment should not be an attribute of the agent:
   - the agent must not be able to read $r$ or $\tau$;
   - in fitting there is no environment, because observations come from data.
-- **Agent state:** belief (last-visit vector $T$, sufficient for the ideal observer) plus current trial $\ell$, time in trial and previous port. $\ell$ is needed by the policy as well as the update.
+- **Agent state:** belief (last-visit vector $T$, sufficient for the ideal observer) plus current trial $l$, time in trial and previous port. $l(t)$ is needed by the policy as well as the update.
 - **Start positions.**
   - The mouse knows its own position at tone onset, so the first-poke distance $\Delta x_1$ is legitimate agent information.
   - Store the start positions as a per-trial array in the environment, passed to the agent as an observation at trial start. In fitting they come from tracking data.

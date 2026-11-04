@@ -4,6 +4,7 @@
 # Numbering of the ports will follow clockwise from the correct port, with theta=n*pi/4 '''
 
 import numpy as np
+import plot
 
 ### Helper functions
 
@@ -196,7 +197,7 @@ class belief_states:
     
     def __init__(self, params):
         self.n_ports = params['n_ports']
-        self.max_trials = params['max_trials']
+        self.T = params['T'] #The prior belief that min_trials is <= some maximum number of trials. This is the prior belief that the agent has about the environment, and is used to initialize the belief states.
         self.f_theta = params['f_theta'] #probability dist as a vector
         self.g_phi = params['g_phi'] #probability dist as a vector
         self.state = self._initialize(self.f_theta, self.g_phi)
@@ -221,7 +222,7 @@ class belief_states:
     @g_phi.setter
     def g_phi(self, distribution):
         """Sets the g_phi distribution and checks if it is valid."""
-        if distribution.shape != (self.max_trials,):
+        if distribution.shape != (self.T,):
             raise ValueError("g_phi must be a numpy array of size 1*20, over the 20 trials")
         if not np.allclose(distribution.sum(), 1):
             raise ValueError("g_phi must be a valid probability distribution")
@@ -240,13 +241,14 @@ class belief_states:
 class simulation:
     def __init__(self, params_env, params_agent, params_beliefs, seed=0):
         self.rng = np.random.default_rng(seed)
-        self.environment = environment(params_env)
-        self.agent = agent(params_agent)
-        self.belief_states = belief_states(params_beliefs)
-        self.sim_data = [] # Outcome of the mice. 
+        self.params_env = params_env
+        self.params_beliefs = params_beliefs
+        self.params_agent = params_agent
 
     def run(self):
-        self.belief_states = belief_states(params_beliefs)  # Reset belief states for each run
+        self.environment = environment(self.params_env)
+        self.agent = agent(self.params_agent)
+        self.belief_states = belief_states(self.params_beliefs)  # Reset belief states for each run
         self.sim_data = []  # Reset simulation data for each run, follows the form of [(port, trial, t_sum), ...]
         current_trial = 0
         t_in_trial = 0  # Initialize time spent in the current trial
@@ -292,40 +294,3 @@ class simulation:
         return self.sim_data
 
 
-## Global Experiment Constants
-SEED = 0
-N_PORTS = 8
-MAX_N_TRIALS = 20
-TRIAL_TIME_MAX = 4  # Based on experiment setup
-RADIUS = 1  # Arbitrary radius for the circular arrangement of ports
-
-params_env = {
-    'min_trials': 5,
-    'trial_time_max': TRIAL_TIME_MAX,
-    'max_trials': MAX_N_TRIALS,
-    'num_ports': N_PORTS,
-    'poke_interval': 0.2,
-    'alpha': 0.5,
-    'radius': RADIUS
-}
-params_agent = {
-    'rho': 0,
-    'sigma': 0,
-    'q1': 0.98,
-    'q2': 0.98,
-    'confidence_threshold': 0.5,
-    'trial_time_max': 3.5,
-    'beta1': 10,
-    'beta2': 10
-}
-
-params_beliefs = {
-    'n_ports': params_env['num_ports'],
-    'max_trials': params_env['max_trials'],
-    'f_theta': von_mises(N_PORTS, 5),
-    'g_phi': np.array([1/MAX_N_TRIALS for _ in range(MAX_N_TRIALS)])
-}
-sim = simulation(params_env=params_env, params_agent=params_agent,params_beliefs=params_beliefs, seed=SEED)
-
-results = sim.run()
-print(results)
