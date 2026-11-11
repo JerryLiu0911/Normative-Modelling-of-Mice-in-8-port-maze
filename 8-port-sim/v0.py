@@ -52,14 +52,13 @@ class environment:
         return current_trial >= self._min_trials and port == 0  # Assuming port 0 is the correct port
         
     def distance(self, target_port, prev_port, rng):
-        if prev_port is None:
+        if type(prev_port) is np.ndarray:  # If prev_port is a position vector, compute the distance in Euclidean space
             target_loc = (self.radius * np.cos(target_port *2* np.pi / self.num_ports), self.radius * np.sin(target_port * np.pi * 2 / self.num_ports))
-            prev_port = self._generate_start_position(rng)
             return np.linalg.norm(np.array(target_loc-prev_port))
         """Computes the distance between two ports in the 8-port model."""
         return min(abs(prev_port - target_port), self.num_ports - abs(prev_port - target_port))*(2 * np.pi / self.num_ports)*self.radius  # Each port is pi/4 radians apart
 
-    def _generate_start_position(self, rng):
+    def generate_start_position(self, rng):
         """Generates random starting positions for the mice."""
         r, phi = self.radius * np.sqrt(rng.random()), 2 * np.pi * rng.random()
         return np.array([r * np.cos(phi), r * np.sin(phi)])
@@ -253,6 +252,7 @@ class simulation:
         current_trial = 0
         t_in_trial = 0  # Initialize time spent in the current trial
         w_t = False  # Initialize water received flag
+        trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a random starting position for the agent
         # max_pokes = (self.environment.trial_time_max//self.environment.poke_interval +1)*self.environment.max_trials  # Arbitrary limit on the number of pokes to prevent infinite loops
 
         """Run the simulation. Currently returns a list of tuples (poke, trial) """
@@ -260,9 +260,10 @@ class simulation:
 
             # Decide where to poke, port_to_poke = $\arg\max_{a_t} \pi(a_t|b_{t-1})$,  confidence = $\pi(port_to_poke |b_{t-1})$
             port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), current_trial, self.rng) #Port and confidence for p_t given current state of beliefs b_{t-1}
+            # Consider the starting position as a parameter to the policy
 
             # mechanism 2 checks if the time to poke will exceed agent's t_max. We assume that the agent's t_max is below the environment's trial_time_max. If the time to poke exceeds this, we increment the trial and reset the time in trial.
-            t_sum = self.environment.timestamp(port_to_poke, self.sim_data[-1][0] if self.sim_data and t_in_trial > 0 else None , t_in_trial, self.rng) 
+            t_sum = self.environment.timestamp(port_to_poke, self.sim_data[-1][0] if self.sim_data and t_in_trial > 0 else trigger_zone , t_in_trial, self.rng) 
 
             mech2_stop_prob = self.agent._soft_time_gate(t_sum)  # Get the probability of stopping based on the time gate (soft mechanism 2)
             
@@ -272,6 +273,8 @@ class simulation:
                 break
             
             if t_in_trial == 0:  # If the trial has been incremented, reset the time in trial
+                ## Draw random trigger point?
+                trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a new random starting position for the agent
                 continue  # Skip the rest of the loop and start the next trial/poke, does not update beliefs
 
             mech1_stop_prob = self.agent._soft_confidence_gate(confidence)  # Get the probability of stopping based on the confidence gate (soft mechanism 1)
@@ -286,11 +289,10 @@ class simulation:
             if self.rng.random() < mech1_stop_prob: # Stops if the confidence gate is activated, i.e. if the agent's confidence in the chosen port exceeds the threshold
                 current_trial += 1
                 t_in_trial = 0
+                trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a new random starting position for the agent
                 if current_trial >= self.environment.max_trials:  # Stop the simulation if water is received, max trials reached, or trial ended
                     break
                 continue 
             
         print("Simulation completed. Total trials: ", current_trial)
         return self.sim_data
-
-
