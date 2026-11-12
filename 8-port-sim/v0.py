@@ -4,7 +4,33 @@
 # Numbering of the ports will follow clockwise from the correct port, with theta=n*pi/4 '''
 
 import numpy as np
-import plot
+# ---- Recording format (structure of arrays; JAX-friendly) ----
+KIND_POKE, KIND_STOP, KIND_CAP = 0, 1, 2
+FIELDS = {"port": np.int32, "kind": np.int32, "trial": np.int32,
+          "t": np.float32, "conf": np.float32, "water": np.bool_}
+
+def pad_session(cols, max_steps):
+    """Pad every column to length max_steps; 'valid' marks real records."""
+    n = len(cols["kind"])
+    out = {}
+    for k, dt in FIELDS.items():
+        fill = -1 if k in ("port", "kind", "trial") else 0
+        arr = np.full(max_steps, fill, dtype=dt); arr[:n] = cols[k][:max_steps]
+        out[k] = arr
+    out["valid"] = np.arange(max_steps) < n
+    return out
+
+def save_session(path, cols):
+    np.savez(path, **cols)
+
+def load_session(path):
+    with np.load(path) as f:
+        return {k: f[k] for k in f.files}
+
+def pokes_only(cols):
+    """Real pokes only (drops STOP / cap records and padding)."""
+    m = cols["valid"] & (cols["kind"] == KIND_POKE)
+    return {k: v[m] for k, v in cols.items()}
 
 ### Helper functions
 
@@ -27,7 +53,6 @@ def random_argmax(values, rng, rtol=1e-9, atol=0.0):
     """Argmax with uniform random tie-breaking among (numerically) equal maxima."""
     ties = np.flatnonzero(np.isclose(values, values.max(), rtol=rtol, atol=atol))
     return rng.choice(ties)
-
 class environment:
     """Environment class for the 8-port model. This simulates the environment for a specific recall session,
     up until the first water is received.
@@ -87,25 +112,6 @@ class environment:
 
         t_in_trial += self.distance(port, previous_port, rng) * self._alpha + self.poke_interval  # Add the time taken to move to the port and the poke interval
         return t_in_trial
-
-    def l(self, stop, current_trial, t_in_trial):
-        """Maps the timestap t to its corresponding trial number. Currently uses a
-        dual mechanism , one based on confidence of correct port (notes eq.57), and 
-        the other on total time spend on a trial (notes eq.47)
-        
-        Args:
-            stop: The stop condition
-            current_trial: The current trial number
-            t_in_trial: The time spent in the current trial."""
-
-        new_t_in_trial = t_in_trial
-        new_current_trial = current_trial
-
-        if t_in_trial >= self.trial_time_max or stop:
-            new_current_trial += 1  # Increment the trial number
-            new_t_in_trial = 0  # Reset the time spent in the trial
-  
-        return new_current_trial, new_t_in_trial
 
 
 class agent:
@@ -170,7 +176,8 @@ class agent:
         Returns:
             The chosen port and its confidence."""
 
-        normalized_terminal = self.terminal(beliefs, current_trial)/self.terminal(beliefs, current_trial).sum()  # Normalize the terminal distribution
+        normalized_terminal = self.terminal(beliefs, current_trial)
+        normalized_terminal /= normalized_terminal.sum()  # Normalize the terminal distribution
 
         # Mechanism 1 inspired confidence cost :   
         conf_term = 0.0 if last_conf is None else self._L1 * sigmoid(self._beta1 * (last_conf - self._confidence_threshold))
@@ -187,7 +194,7 @@ class agent:
         port = rng.choice(self.num_ports+1, p=softmax(np.append(V_n, 0), self._beta))  # Choose the port with softmax policy, V_n(port=8)=0=STOP
         
         # Get the confidence of the chosen port
-        confidence = np.append(self.marginal(beliefs), None)[port]
+        confidence = self.marginal(beliefs)[port] if port < self.num_ports else None
         
         return port,confidence
         
@@ -293,51 +300,73 @@ class simulation:
         self.params_agent = params_agent
 
     def run(self):
+
         self.environment = environment(self.params_env)
         self.agent = agent(self.params_agent)
         self.belief_states = belief_states(self.params_beliefs)  # Reset belief states for each run
-        self.sim_data = []  # Reset simulation data for each run, follows the form of [(port, trial, t_sum), ...]
-        current_trial = 0
-        t_in_trial = 0  # Initialize time spent in the current trial
-        w_t = False  # Initialize water received flag
-        trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a random starting position for the agent
+
+                #Draw the min_water trial from the prior distribution g_phi, if it is not provided in the environment parameters. 
+        if self.params_env.get('min_trials') is None:
+            g_env = np.asarray(self.params_env['g_env'])
+            self.environment._min_trials = int(self.rng.choice(len(g_env), p=g_env))
+        
+        self.min_trials = self.environment._min_trials
+        
+        rec = {k: [] for k in FIELDS} # Initialize the record dictionary to store simulation data
+        def record(kind, port, trial, t, conf, water):
+            rec["kind"].append(kind)
+            rec["port"].append(-1 if port is None else int(port))
+            rec["trial"].append(trial)
+            rec["t"].append(t)
+            rec["conf"].append(0.0 if conf is None else float(conf))   # 0.0 = not applicable; use 'kind'
+            rec["water"].append(bool(water))
+
+        STOP_port = self.agent.num_ports # port 8 is the "stop" option, which is not a real port, but is used to indicate that the agent has decided to stop poking and end the trial. 
+        current_trial, t_in_trial, w_t = 0, 0.0, False
+        trigger_zone = self.environment.generate_start_position(self.rng)
+        last_port, last_conf = None, None
+        
+        def new_trial():
+            nonlocal current_trial, t_in_trial, trigger_zone, last_port, last_conf
+            current_trial += 1
+            t_in_trial = 0.0
+            trigger_zone = self.environment.generate_start_position(self.rng)
+            last_port, last_conf = None, None
 
         """Run the simulation. Currently returns a list of tuples (poke, trial) """
         while not w_t :
 
+            current_position = last_port if last_port is not None else trigger_zone   # xy start or last port index
+            
             # Decide where to poke, port_to_poke = $\arg\max_{a_t} \pi(a_t|b_{t-1})$,  confidence = $\pi(port_to_poke |b_{t-1})$
-            port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), self.sim_data[-1][3] if self.sim_data else None, t_in_trial, current_trial, self.sim_data[-1][0] if self.sim_data and t_in_trial > 0 else trigger_zone, self.rng) #Port and confidence for p_t given current state of beliefs b_{t-1}
+            port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), last_conf, t_in_trial, current_trial, current_position, self.rng) #Port and confidence for p_t given current state of beliefs b_{t-1}
             # Consider the starting position as a parameter to the policy
         
-            if port_to_poke==8:
-                self.sim_data.append((port_to_poke, current_trial, t_in_trial, None ,w_t))
-                trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a new random starting position for the agent
-                t_in_trial = 0  # Reset the time in trial
-                current_trial += 1  # Increment the trial number
-                if current_trial >= self.environment.max_trials:  # Stop the simulation if water is received
+            if port_to_poke==STOP_port:  # If the agent decides to stop, we increment the trial and reset the time in trial
+                record(KIND_STOP, None, current_trial, t_in_trial, None, False)
+                new_trial()
+                if current_trial >= self.environment.max_trials:
                     break
                 continue
            
-            t_sum = self.environment.timestamp(port_to_poke, self.sim_data[-1][0] if self.sim_data and t_in_trial > 0 else trigger_zone , t_in_trial, self.rng) 
+            t_sum = self.environment.timestamp(port_to_poke, current_position , t_in_trial, self.rng) 
 
-            current_trial, t_in_trial = self.environment.l(False, current_trial, t_sum)
-            
-            if current_trial >= self.environment.max_trials:  # Stop the simulation if water is received, max trials reached, or trial ended
-                break
-            
-            if t_in_trial == 0:  # If the trial has been incremented, reset the time in trial
-                self.sim_data.append((9, current_trial-1, 4, None ,w_t)) # 9=cut by hard 4s gate, 4=hard time limit, None=confidence not applicable
-                trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a new random starting position for the agent
-                continue  # Skip the rest of the loop and start the next trial/poke, does not update beliefs
-
+            if t_sum >= self.environment.trial_time_max:                   # hard 4 s cap (environment)
+                record(KIND_CAP, port_to_poke, current_trial, t_sum, None, False)  # proposed port, not poked
+                new_trial()
+                if current_trial >= self.environment.max_trials:
+                    break
+                continue
+ 
             w_t = self.environment.respondToPoke(port_to_poke, current_trial)
-            self.sim_data.append((port_to_poke, current_trial, t_sum, confidence,w_t))  # Record the poke, trial, and whether water was received
-            
+            record(KIND_POKE, port_to_poke, current_trial, t_sum, confidence, w_t)
             if w_t:
                 break
 
-            self.belief_states.update(self.agent.update(self.belief_states.get_state(), port_to_poke, current_trial)) # Update beliefs first
-
-            
+            self.belief_states.update(self.agent.update(self.belief_states.get_state(), port_to_poke, current_trial))
+            last_port, last_conf, t_in_trial = port_to_poke, confidence, t_sum
+ 
+        self.sim_data = {k: np.asarray(v, dtype=FIELDS[k]) for k, v in rec.items()}
+        self.sim_data["valid"] = np.ones(len(rec["kind"]), dtype=bool)           
         print("Simulation completed. Total trials: ", current_trial)
         return self.sim_data
