@@ -12,6 +12,11 @@ def sigmoid(x):
     """Computes the sigmoid function."""
     return np.tanh(x/2)*0.5 + 0.5
 
+def softmax(x, beta):
+    """Computes the softmax function with temperature parameter beta."""
+    e_x = np.exp(beta * (x - np.max(x)))
+    return e_x / e_x.sum()
+
 def von_mises(num_port, kappa):
     """Computes the von Mises probability density function."""
     a = kappa * np.cos(2 * np.pi * np.arange(num_port) / num_port)
@@ -69,6 +74,7 @@ class environment:
 
     def timestamp(self, port, previous_port, t_in_trial, rng):
         """Returns the timestamp of the poke and the total time spent in the trial.
+        This is a placeholder until we have the actual timestamps from the data.
         Args:
             port: The port that was poked.
             previous_port: The previous port that was poked.
@@ -115,6 +121,17 @@ class agent:
         self._beta1 = params['beta1'] # Strength of confidence_gate firing
         self._beta2 = params['beta2'] # Strngth of time_gate firing
 
+        self._beta = params['beta']  # Arbitrary value for beta
+        self._L1 = params['L1']  # Arbitrary value for L1
+        self._L2 = params['L2']  # Arbitrary value for L2
+        self._lambda = params['lambda']  # Arbitrary value for lambda
+        self._alpha = params['alpha']  # Arbitrary value for alpha
+        self._poke_interval = params['poke_interval']  # Arbitrary value for poke_interval
+
+        self.env = params['env']  # Environment parameters, including number of ports and radius
+        self.num_ports = self.env['num_ports']
+        self.radius = self.env['radius']
+
     def marginal(self, belief_states):
         """Computes the marginal distribution over ports given the belief states.
         Args:
@@ -125,7 +142,7 @@ class agent:
         return belief_states.sum(axis=1)
 
     def terminal(self, belief_states, current_trial):
-        """Computes the terminal distribution over ports given the belief states.
+        """Computes the unnormalised terminal distribution over ports given the belief states.
         Args:
             belief_states: The current belief states.
             current_trial: The current trial number.
@@ -134,13 +151,44 @@ class agent:
         mask = np.arange(belief_states.shape[1]) <= current_trial 
         return (belief_states * mask).sum(axis=1)
 
-    def policy(self, beliefs, current_trial, rng):
-        # Placeholder for the actual policy implementation
-        # This should be replaced with the actual logic for the 8-port model
-        port = random_argmax(self.terminal(beliefs, current_trial), rng)  # Choose the port with the highest marginal probability
+    def distance(self, target_port, prev_port):
+        """The agent's perception/prediction of the distance between two ports"""
+        if type(prev_port) is np.ndarray:  # If prev_port is a position vector, compute the distance in Euclidean space
+            target_loc = (self.radius * np.cos(target_port *2* np.pi / self.num_ports), self.radius * np.sin(target_port * np.pi * 2 / self.num_ports))
+            return np.linalg.norm(np.array(target_loc-prev_port))
+        """Computes the distance between two ports in the 8-port model."""
+        return min(abs(prev_port - target_port), self.num_ports - abs(prev_port - target_port))*(2 * np.pi / self.num_ports)*self.radius  # Each port is pi/4 radians apart
+
+
+    def policy(self, beliefs, last_conf, current_time, current_trial, current_position, rng):
+        """Computes the policy for the agent given the belief states and the current trial number.
+        Args:
+            beliefs: The current belief states.
+            current_trial: The current trial number.
+            current_position: The current position of the agent.
+            rng: The random number generator.
+        Returns:
+            The chosen port and its confidence."""
+
+        normalized_terminal = self.terminal(beliefs, current_trial)/self.terminal(beliefs, current_trial).sum()  # Normalize the terminal distribution
+
+        # Mechanism 1 inspired confidence cost :   
+        conf_term = 0.0 if last_conf is None else self._L1 * sigmoid(self._beta1 * (last_conf - self._confidence_threshold))
+
+        distance = np.array([self.distance(port, current_position) for port in range(self.num_ports)])  # Compute the distance to each port
+
+        # Mechanism 2 inspired time cost:
+        # Compute the time cost for each port
+        eta = np.array([current_time + self._poke_interval + self._alpha*distance[port] for port in range(self.num_ports)])  # Compute the time cost for each port
+        time_cost = eta - self._trial_time_max 
+
+        V_n = normalized_terminal - self._lambda * distance - self._L2*sigmoid(self._beta2 * time_cost) - conf_term # Compute the value function for each port and the "no poke" option
+
+        port = rng.choice(self.num_ports+1, p=softmax(np.append(V_n, 0), self._beta))  # Choose the port with softmax policy, V_n(port=8)=0=STOP
         
         # Get the confidence of the chosen port
-        confidence = self.marginal(beliefs)[port]
+        confidence = np.append(self.marginal(beliefs), None)[port]
+        
         return port,confidence
         
     def update(self, belief_states, port, current_trial):
@@ -253,31 +301,35 @@ class simulation:
         t_in_trial = 0  # Initialize time spent in the current trial
         w_t = False  # Initialize water received flag
         trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a random starting position for the agent
-        # max_pokes = (self.environment.trial_time_max//self.environment.poke_interval +1)*self.environment.max_trials  # Arbitrary limit on the number of pokes to prevent infinite loops
 
         """Run the simulation. Currently returns a list of tuples (poke, trial) """
         while not w_t :
 
             # Decide where to poke, port_to_poke = $\arg\max_{a_t} \pi(a_t|b_{t-1})$,  confidence = $\pi(port_to_poke |b_{t-1})$
-            port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), current_trial, self.rng) #Port and confidence for p_t given current state of beliefs b_{t-1}
+            port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), self.sim_data[-1][3] if self.sim_data else None, t_in_trial, current_trial, self.sim_data[-1][0] if self.sim_data and t_in_trial > 0 else trigger_zone, self.rng) #Port and confidence for p_t given current state of beliefs b_{t-1}
             # Consider the starting position as a parameter to the policy
-
-            # mechanism 2 checks if the time to poke will exceed agent's t_max. We assume that the agent's t_max is below the environment's trial_time_max. If the time to poke exceeds this, we increment the trial and reset the time in trial.
+        
+            if port_to_poke==8:
+                self.sim_data.append((port_to_poke, current_trial, t_in_trial, None ,w_t))
+                trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a new random starting position for the agent
+                t_in_trial = 0  # Reset the time in trial
+                current_trial += 1  # Increment the trial number
+                if current_trial >= self.environment.max_trials:  # Stop the simulation if water is received
+                    break
+                continue
+           
             t_sum = self.environment.timestamp(port_to_poke, self.sim_data[-1][0] if self.sim_data and t_in_trial > 0 else trigger_zone , t_in_trial, self.rng) 
 
-            mech2_stop_prob = self.agent._soft_time_gate(t_sum)  # Get the probability of stopping based on the time gate (soft mechanism 2)
-            
-            current_trial, t_in_trial = self.environment.l(self.rng.random() < mech2_stop_prob, current_trial, t_sum)
+            current_trial, t_in_trial = self.environment.l(False, current_trial, t_sum)
             
             if current_trial >= self.environment.max_trials:  # Stop the simulation if water is received, max trials reached, or trial ended
                 break
             
             if t_in_trial == 0:  # If the trial has been incremented, reset the time in trial
-                ## Draw random trigger point?
+                self.sim_data.append((9, current_trial-1, 4, None ,w_t)) # 9=cut by hard 4s gate, 4=hard time limit, None=confidence not applicable
                 trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a new random starting position for the agent
                 continue  # Skip the rest of the loop and start the next trial/poke, does not update beliefs
 
-            mech1_stop_prob = self.agent._soft_confidence_gate(confidence)  # Get the probability of stopping based on the confidence gate (soft mechanism 1)
             w_t = self.environment.respondToPoke(port_to_poke, current_trial)
             self.sim_data.append((port_to_poke, current_trial, t_sum, confidence,w_t))  # Record the poke, trial, and whether water was received
             
@@ -286,13 +338,6 @@ class simulation:
 
             self.belief_states.update(self.agent.update(self.belief_states.get_state(), port_to_poke, current_trial)) # Update beliefs first
 
-            if self.rng.random() < mech1_stop_prob: # Stops if the confidence gate is activated, i.e. if the agent's confidence in the chosen port exceeds the threshold
-                current_trial += 1
-                t_in_trial = 0
-                trigger_zone = self.environment.generate_start_position(self.rng)  # Generate a new random starting position for the agent
-                if current_trial >= self.environment.max_trials:  # Stop the simulation if water is received, max trials reached, or trial ended
-                    break
-                continue 
             
         print("Simulation completed. Total trials: ", current_trial)
         return self.sim_data
