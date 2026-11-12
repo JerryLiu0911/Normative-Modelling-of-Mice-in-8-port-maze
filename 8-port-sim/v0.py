@@ -5,17 +5,20 @@
 
 import numpy as np
 # ---- Recording format (structure of arrays; JAX-friendly) ----
-KIND_POKE, KIND_STOP, KIND_CAP = 0, 1, 2
+KIND_POKE, KIND_STOP, KIND_CAP = 0, 1, 2 # Default kinds of records. POKE = 0, STOP = 1, CAP = 2. These are used to indicate the type of record in the simulation data.
 FIELDS = {"port": np.int32, "kind": np.int32, "trial": np.int32,
           "t": np.float32, "conf": np.float32, "water": np.bool_}
 
+# To output with JAX, needs fixed size recordings. However, since the number of pokes between sessions is variable,
+# The pad_session function allows us to adds invalid steps using the 'valid' field, padding the session to a fixed length.
 def pad_session(cols, max_steps):
     """Pad every column to length max_steps; 'valid' marks real records."""
     n = len(cols["kind"])
     out = {}
     for k, dt in FIELDS.items():
         fill = -1 if k in ("port", "kind", "trial") else 0
-        arr = np.full(max_steps, fill, dtype=dt); arr[:n] = cols[k][:max_steps]
+        arr = np.full(max_steps, fill, dtype=dt)
+        arr[:n] = cols[k][:max_steps]
         out[k] = arr
     out["valid"] = np.arange(max_steps) < n
     return out
@@ -113,7 +116,6 @@ class environment:
         t_in_trial += self.distance(port, previous_port, rng) * self._alpha + self.poke_interval  # Add the time taken to move to the port and the poke interval
         return t_in_trial
 
-
 class agent:
     """Stateless agent class for the 8-port model. This simulates the agent's behavior in the environment."""
     def __init__(self, params):
@@ -188,8 +190,9 @@ class agent:
         # Compute the time cost for each port
         eta = np.array([current_time + self._poke_interval + self._alpha*distance[port] for port in range(self.num_ports)])  # Compute the time cost for each port
         time_cost = eta - self._trial_time_max 
+        time_term = self._L2*sigmoid(self._beta2 * time_cost)  # Compute the time cost term for each port
 
-        V_n = normalized_terminal - self._lambda * distance - self._L2*sigmoid(self._beta2 * time_cost) - conf_term # Compute the value function for each port and the "no poke" option
+        V_n = normalized_terminal - self._lambda * distance - time_term - conf_term # Compute the value function for each port and the "no poke" option
 
         port = rng.choice(self.num_ports+1, p=softmax(np.append(V_n, 0), self._beta))  # Choose the port with softmax policy, V_n(port=8)=0=STOP
         
