@@ -46,9 +46,9 @@ def softmax(x, beta):
     e_x = np.exp(beta * (x - np.max(x)))
     return e_x / e_x.sum()
 
-def von_mises(num_port, kappa):
-    """Computes the von Mises probability density function."""
-    a = kappa * np.cos(2 * np.pi * np.arange(num_port) / num_port)
+def von_mises(num_port, kappa, mu=0):
+    """Computes the von Mises probability mass function centered at mu, defaulted to the correct port (0)."""
+    a = kappa * np.cos(2 * np.pi * (np.arange(num_port) - mu) / num_port)
     f = np.exp(a - a.max())
     return np.array(f / f.sum())
 
@@ -122,16 +122,11 @@ class agent:
         self.rho = params['rho']
         self.sigma = params['sigma']
 
-        self._q1 =  params['q1'] # Arbitrary value for q1
         self._q2 =  params['q2'] # Arbitrary value for q2
-        self._confidence_threshold = params['confidence_threshold'] # Arbitrary threshold for confidence gate
         self._trial_time_max = params['trial_time_max'] # Arbitrary threshold for time gate
-        self._beta1 = params['beta1'] # Strength of confidence_gate firing
         self._beta2 = params['beta2'] # Strngth of time_gate firing
 
         self._beta = params['beta']  # Arbitrary value for beta
-        self._L1 = params['L1']  # Arbitrary value for L1
-        self._L2 = params['L2']  # Arbitrary value for L2
         self._lambda = params['lambda']  # Arbitrary value for lambda
         self._alpha = params['alpha']  # Arbitrary value for alpha
         self._poke_interval = params['poke_interval']  # Arbitrary value for poke_interval
@@ -168,7 +163,7 @@ class agent:
         return min(abs(prev_port - target_port), self.num_ports - abs(prev_port - target_port))*(2 * np.pi / self.num_ports)*self.radius  # Each port is pi/4 radians apart
 
 
-    def policy(self, beliefs, last_conf, current_time, current_trial, current_position, rng):
+    def policy(self, beliefs, current_time, current_trial, current_position, rng):
         """Computes the policy for the agent given the belief states and the current trial number.
         Args:
             beliefs: The current belief states.
@@ -181,18 +176,15 @@ class agent:
         normalized_terminal = self.terminal(beliefs, current_trial)
         normalized_terminal /= normalized_terminal.sum()  # Normalize the terminal distribution
 
-        # Mechanism 1 inspired confidence cost :   
-        conf_term = 0.0 if last_conf is None else self._L1 * sigmoid(self._beta1 * (last_conf - self._confidence_threshold))
-
         distance = np.array([self.distance(port, current_position) for port in range(self.num_ports)])  # Compute the distance to each port
 
         # Mechanism 2 inspired time cost:
         # Compute the time cost for each port
         eta = np.array([current_time + self._poke_interval + self._alpha*distance[port] for port in range(self.num_ports)])  # Compute the time cost for each port
         time_cost = eta - self._trial_time_max 
-        time_term = self._L2*sigmoid(self._beta2 * time_cost)  # Compute the time cost term for each port
+        time_term = self._q2*sigmoid(self._beta2 * time_cost)  # Compute the time cost term for each port
 
-        V_n = normalized_terminal - self._lambda * distance - time_term - conf_term # Compute the value function for each port and the "no poke" option
+        V_n = normalized_terminal*(1 - time_term) - self._lambda * distance # Compute the value function for each port and the "no poke" option
 
         port = rng.choice(self.num_ports+1, p=softmax(np.append(V_n, 0), self._beta))  # Choose the port with softmax policy, V_n(port=8)=0=STOP
         
@@ -218,38 +210,6 @@ class agent:
             belief_states /= belief_states.sum()
 
         return belief_states
-
-    def _soft_confidence_gate(self, confidence):
-        """Determines whether to stop based on the confidence of the chosen port.
-        Args:
-            confidence: The confidence of the chosen port.
-        Returns:
-            True if the agent should stop, False otherwise."""
-        return self._q1*sigmoid(self._beta1 * (confidence - self._confidence_threshold))
-
-    def _soft_time_gate(self, t_sum):
-        """Determines whether to stop based on the total time spent in the trial.
-        Args:
-            t_sum: The total time spent in the trial.
-        Returns:
-            True if the agent should stop, False otherwise."""
-        return self._q2*sigmoid(self._beta2 * (t_sum - self._trial_time_max))
-
-    def stop_prob(self, port_confidence, t_sum):
-        """Returns the probability of stopping P_n, Currently uses a
-        dual mechanism , one based on confidence of correct port (notes eq.57), and 
-        the other on total time spend on a trial (notes eq.47)
-        
-        Args:
-            port_confidence: The confidence of the chosen port.
-            t_sum: The total time spent in the trial.
-
-        Returns:
-            The probability of stopping."""
-        
-        return 1-(1-self._soft_confidence_gate(port_confidence))*(1-self._soft_time_gate(t_sum))
-
-
 class belief_states:
     
     def __init__(self, params):
@@ -341,8 +301,7 @@ class simulation:
 
             current_position = last_port if last_port is not None else trigger_zone   # xy start or last port index
             
-            # Decide where to poke, port_to_poke = $\arg\max_{a_t} \pi(a_t|b_{t-1})$,  confidence = $\pi(port_to_poke |b_{t-1})$
-            port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), last_conf, t_in_trial, current_trial, current_position, self.rng) #Port and confidence for p_t given current state of beliefs b_{t-1}
+            port_to_poke, confidence = self.agent.policy(self.belief_states.get_state(), t_in_trial, current_trial, current_position, self.rng) #Port and confidence for p_t given current state of beliefs b_{t-1}
             # Consider the starting position as a parameter to the policy
         
             if port_to_poke==STOP_port:  # If the agent decides to stop, we increment the trial and reset the time in trial

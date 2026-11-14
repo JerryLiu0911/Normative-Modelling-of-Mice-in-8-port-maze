@@ -3,7 +3,8 @@ plot_pokes.py  -  Morales et al. (2020)-style visualisation of 8-port maze poke 
 
 Input
 -----
-data : array, shape (N, 5), one row per poke, columns
+data : simulator column dict (v0.run() / v0.load_session(), padded or not), or
+       array, shape (N, 5), one row per poke, columns
     0  port           int 0..7, 0 = correct port, numbered consecutively round the arena
     1  trial          trial index l(t)
     2  time_in_trial  seconds since trial (cue) onset
@@ -55,6 +56,23 @@ def water_available(trial, min_trial):
     return trial > min_trial if STRICT else trial >= min_trial
 
 
+KIND_POKE = 0    # must match v0.KIND_POKE
+
+
+def as_array(data):
+    """Accept either the simulator's column dict (v0.run / v0.load_session, padded or not)
+    or an (N, 5) poke array, and return the (N, 5) float array of real pokes only.
+    STOP / cap records and padding are dropped here, so no panel ever sees them."""
+    if isinstance(data, dict):
+        valid = data.get("valid", np.ones(len(data["kind"]), dtype=bool))
+        m = valid & (data["kind"] == KIND_POKE)
+        if (data["port"][m] > N_PORTS - 1).any() or (data["port"][m] < 0).any():
+            raise ValueError("poke record with port outside 0..7")
+        return np.column_stack([data["port"][m], data["trial"][m], data["t"][m],
+                                data["conf"][m], data["water"][m]]).astype(float)
+    return np.asarray(data, dtype=float).reshape(-1, 5)
+
+
 # ----------------------------------------------------------------------------- helpers
 def signed_distance(port):
     """Signed circular distance to the correct port: 0,1,2,3,4,-3,-2,-1 for ports 0..7."""
@@ -68,7 +86,7 @@ def port_colour(port):
 
 def unpack(data):
     """Validate, sort by (trial, time) and return the five columns."""
-    data = np.asarray(data, dtype=float).reshape(-1, 5)
+    data = as_array(data)
     data = data[np.lexsort((data[:, TIME], data[:, TRIAL]))]
     if data.size and np.nanmax(data[:, CONF]) <= 1.0:
         data[:, CONF] *= 100          # fraction -> percent
@@ -81,7 +99,7 @@ def unpack(data):
 
 def select_phase(data, min_trial, phase):
     """phase: 'no_water' (water unavailable), 'water' (available) or 'all'."""
-    data = np.asarray(data, dtype=float).reshape(-1, 5)
+    data = as_array(data)
     avail = water_available(data[:, TRIAL], min_trial)
     if phase == "no_water":
         return data[~avail]
@@ -297,7 +315,7 @@ def plot_session(data, min_trial, color_by="distance", phase="no_water", title=N
     """Composite figure of all panels for one session."""
     fig = plt.figure(figsize=(14, 9), constrained_layout=True)
     gs = fig.add_gridspec(3, 3, width_ratios=[1.5, 1, 1], height_ratios=[1, 1, 0.55])
-    t_max = 1.05 * np.asarray(data, dtype=float)[:, TIME].max()
+    t_max = 1.05 * as_array(data)[:, TIME].max()
 
     plot_raster(fig.add_subplot(gs[0:2, 0]), data, min_trial, color_by, t_max)
     plot_psth(fig.add_subplot(gs[2, 0]), data, min_trial, phase, t_max=t_max)
@@ -353,8 +371,11 @@ def check(data, min_trial):
 
 
 def load_pokes(path):
-    """Load an (N, 5) poke array from .npy. Also handles object arrays of tuples
-    (e.g. np.save of a list of tuples) and structured arrays."""
+    """Load pokes as an (N, 5) array. .npz = simulator column format (v0.save_session);
+    .npy = legacy (N, 5) array, object array of tuples, or structured array."""
+    if str(path).endswith(".npz"):
+        with np.load(path) as f:
+            return as_array({k: f[k] for k in f.files})
     arr = np.load(path, allow_pickle=True)
     if arr.dtype.names is not None or arr.dtype == object:
         arr = np.array(arr.tolist(), dtype=float)

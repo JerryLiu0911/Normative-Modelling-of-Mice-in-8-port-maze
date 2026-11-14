@@ -15,37 +15,39 @@ params_env = {
     'trial_time_max': TRIAL_TIME_MAX,
     'max_trials': MAX_N_TRIALS,
     'num_ports': N_PORTS,
-    'poke_interval': 0.2,
-    'alpha': 0.5,
+    'poke_interval': 0.8,
+    'alpha': 0.6,
     'radius': RADIUS
 }
 params_agent = {
     'rho': 0,
     'sigma': 0,
-    'q1': 0.98,
     'q2': 0.98,
-    'confidence_threshold': 0.3,
     'trial_time_max': 3.5,
-    'beta1': 10,
-    'beta2': 10
+    'beta2': 100,
+    'beta' : 100,
+
+    'lambda': 0.2,
+    'alpha': 0.6,
+    'poke_interval': 0.8,
+    'env':params_env
+
 }
 
 params_beliefs = {
     'n_ports': params_env['num_ports'],
     'T': T,
-    'f_theta': v0.von_mises(N_PORTS, 1),
+    'f_theta':v0.von_mises(params_env['num_ports'], 1)+0.0*v0.von_mises(params_env['num_ports'], 0.5, np.random.random(size=params_env['num_ports'])),
     'g_phi': np.array([1/T for _ in range(T)])
 }
 sim = v0.simulation(params_env=params_env, params_agent=params_agent,params_beliefs=params_beliefs, seed=SEED)
 
 results = sim.run()
-save_as = "session.npy"
-np.save(save_as, results)
-print(results)
+save_as = "session.npz"
+v0.save_session(save_as, results)
+data = plot.load_pokes(save_as)          # .npz → (N, 5) array of real pokes
 
-data = plot.load_pokes(save_as)
 plot.check(data, params_env['min_trials'])
 
-fig = plot.plot_session(np.array(results), params_env['min_trials'], color_by='distance', phase='no_water')
-
+fig = plot.plot_session(results, params_env['min_trials'], color_by='distance', phase='no_water')
 plot.plt.show()
